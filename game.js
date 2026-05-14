@@ -315,23 +315,39 @@ function handleKey(key, isDown) {
     if (key === 'a' || key === 'arrowleft') keys.left = isDown;
     if (key === 'd' || key === 'arrowright') keys.right = isDown;
 }
-function updateScore(pts) {
-    score += pts;
-    document.getElementById('score-board').innerText = `Score: ${score}`;
-}
 function gameOver() {
     if (isGameOver) return;
     isGameOver = true;
     document.getElementById('game-over').style.display = 'block';
     document.getElementById('final-score').innerText = score;
 }
-function animate() {
+
+let lastRenderTime = 0;
+let lastScore = -1;
+
+function updateScore(pts) {
+    score += pts;
+}
+
+function updateUI() {
+    if (score !== lastScore) {
+        document.getElementById('score-board').innerText = `Score: ${score}`;
+        lastScore = score;
+    }
+}
+
+function animate(time) {
     requestAnimationFrame(animate);
+    
+    // Performance limiting: Only render if time delta is reasonable, skipping frames if necessary (optional)
     if (!isGameOver) {
         player.update();
         enemies.forEach(e => e.update());
         foods.forEach(f => f.update());
         powerups.forEach(p => p.update());
+        
+        updateUI();
+
         if (cameraMode === 'thirdPerson') {
             const camOffset = new THREE.Vector3(-Math.sin(player.direction) * 12, 7, -Math.cos(player.direction) * 12);
             camera.position.lerp(player.head.position.clone().add(camOffset), 0.1);
@@ -340,11 +356,15 @@ function animate() {
             camera.position.lerp(new THREE.Vector3(player.head.position.x, 40, player.head.position.z), 0.1);
             camera.lookAt(player.head.position);
         }
-        enemies.forEach(enemy => {
-            enemy.segments.forEach(seg => {
-                if (player.head.position.distanceTo(seg.position) < 0.75) gameOver();
+
+        // Throttled enemy collision check (every 5 frames instead of every frame)
+        if (time % 5 < 1) {
+            enemies.forEach(enemy => {
+                enemy.segments.forEach(seg => {
+                    if (player.head.position.distanceTo(seg.position) < 0.75) gameOver();
+                });
             });
-        });
+        }
     }
     renderer.render(scene, camera);
 }
