@@ -1,4 +1,4 @@
-// Wormzone 3D - Multiplayer Client (Fixed & Complete)
+// Wormzone 3D - Mobile-First Multiplayer Client
 
 import * as THREE from 'three';
 
@@ -12,7 +12,6 @@ const players = {};
 let myPlayerId = null, myPlayer = null;
 const foods = [], powerups = [];
 let cameraMode = 'thirdPerson';
-const keys = {a:false,d:false,left:false,right:false};
 let ws = null;
 let isGameOver = false;
 let lastInput = 0;
@@ -22,6 +21,9 @@ const chatMsgs = [];
 let selectedColor = 0x4CAF50;
 const scoreData = {};
 let foodMeshes = [], pupMeshes = [];
+
+// Touch state
+const touchState = { left: { active: false, id: null }, right: { active: false, id: null } };
 
 // ============ WS ============
 function connect() {
@@ -181,9 +183,9 @@ function sendChatMsg(){
     if(i?.value.trim() && ws?.readyState===WebSocket.OPEN){send({type:'chat',message:i.value.trim()});i.value='';}
 }
 
-function handleChatKey(e){if(e.key==='Enter')sendChatMsg();else if(e.key==='Escape')toggleChat();}
+function onChatKey(e){if(e.key==='Enter')sendChatMsg();else if(e.key==='Escape')toggleChat();}
 
-// ============ JOIN MODAL ============
+// ============ JOIN ============
 function buildColorPicker(){
     const c=document.getElementById('colorPicker'); if(!c) return;
     c.innerHTML=SNAKE_COLORS.map(col=>{const h=col.toString(16).padStart(6,'0');const sel=col===selectedColor;return `<div class="co ${sel?'sel':''}" style="background:#${h}" data-c="${col}" onclick="pickColor(this,${col})"></div>`;}).join('');
@@ -205,7 +207,7 @@ function showJoinModal(){
     const n=document.getElementById('pname'); if(n) n.focus();
 }
 
-// ============ GAME OVER / WINNER ============
+// ============ GAME OVER ============
 function showWinner(wid,scores){
     const w=players[wid]; const wn=w?w.name:'Player';
     const ov=document.getElementById('winov');
@@ -254,12 +256,69 @@ function toggleChat(){
     else{p.style.display='none';b.textContent='💬 Chat';b.classList.remove('on');}
 }
 
+function sendChatMsg(){
+    const i=document.getElementById('chatinput');
+    if(i?.value.trim() && ws?.readyState===WebSocket.OPEN){send({type:'chat',message:i.value.trim()});i.value='';}
+}
+
+function onChatKey(e){if(e.key==='Enter')sendChatMsg();else if(e.key==='Escape')toggleChat();}
+
+// ============ JOIN ============
+function buildColorPicker(){
+    const c=document.getElementById('colorPicker'); if(!c) return;
+    c.innerHTML=SNAKE_COLORS.map(col=>{const h=col.toString(16).padStart(6,'0');const sel=col===selectedColor;return `<div class="co ${sel?'sel':''}" style="background:#${h}" data-c="${col}" onclick="pickColor(this,${col})"></div>`;}).join('');
+}
+
+function pickColor(el,col){selectedColor=col;document.querySelectorAll('.co').forEach(x=>x.classList.remove('sel'));el.classList.add('sel');}
+
+function doJoin(){
+    const n=document.getElementById('pname');
+    const name=n?.value.trim()||'Player-'+Math.random().toString(36).slice(2,6);
+    document.getElementById('joinModal').style.display='none';
+    send({type:'join',name,color:selectedColor});
+    document.getElementById('gamewrap').style.display='block';
+}
+
+function showJoinModal(){
+    document.getElementById('joinModal').style.display='flex';
+    buildColorPicker();
+    const n=document.getElementById('pname'); if(n) n.focus();
+}
+
+// ============ GAME OVER ============
+function showWinner(wid,scores){
+    const w=players[wid]; const wn=w?w.name:'Player';
+    const ov=document.getElementById('winov');
+    if(ov){ov.style.display='block';ov.textContent='🏆 '+wn+' WINS! 🏆';}
+    const go=document.getElementById('go');
+    if(go){go.style.display='block';document.getElementById('fscore').textContent=myPlayer?.score||0;}
+    isGameOver=true;
+    setTimeout(()=>{if(ov)ov.style.display='none';},5000);
+}
+
+function gameOver(){
+    if(isGameOver) return;
+    isGameOver=true;
+    const go=document.getElementById('go');
+    if(go){go.style.display='block';document.getElementById('fscore').textContent=myPlayer?.score||0;}
+}
+
+function respawn(){
+    document.getElementById('go').style.display='none';
+    document.getElementById('winov').style.display='none';
+    isGameOver=false;
+    send({type:'respawn'});
+}
+
 // ============ TOUCH ============
 function setupTouch(){
     const L=document.getElementById('tl'),R=document.getElementById('tr');
     const touch=(left,active)=>{if(left)keys.left=active;else keys.right=active;const now=Date.now();if(now-lastInput>THROTTLE&&myPlayerId){send({type:'turn',direction:active?(left?-1:1):0});lastInput=now;}};
-    const add=(el,left)=>{el.addEventListener('touchstart',e=>{e.preventDefault();touch(left,true);},{passive:false});el.addEventListener('touchend',e=>{e.preventDefault();touch(left,false);},{passive:false});el.addEventListener('touchcancel',e=>{e.preventDefault();touch(left,false);},{passive:false});el.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];const tgt=document.elementFromPoint(t.clientX,t.clientY);if(tgt!==el)touch(left,false);},{passive:false});};
+    const add=(el,left)=>{el.addEventListener('touchstart',e=>{e.preventDefault();for(const t of e.changedTouches){if(left){if(!touchState.left.active){touchState.left.active=true;touchState.left.id=t.identifier;el.classList.add('pressed');sendTurn(true,-1);break;}}else{if(!touchState.right.active){touchState.right.active=true;touchState.right.id=t.identifier;el.classList.add('pressed');sendTurn(true,1);break;}}}},{passive:false});el.addEventListener('touchend',e=>{e.preventDefault();for(const t of e.changedTouches){if(left){if(t.identifier===touchState.left.id){touchState.left.active=false;touchState.left.id=null;el.classList.remove('pressed');sendTurn(false,-1);break;}}else{if(t.identifier===touchState.right.id){touchState.right.active=false;touchState.right.id=null;el.classList.remove('pressed');sendTurn(false,1);break;}}}},{passive:false});el.addEventListener('touchcancel',e=>{e.preventDefault();for(const t of e.changedTouches){if(left){if(t.identifier===touchState.left.id){touchState.left.active=false;touchState.left.id=null;el.classList.remove('pressed');sendTurn(false,-1);break;}}else{if(t.identifier===touchState.right.id){touchState.right.active=false;touchState.right.id=null;el.classList.remove('pressed');sendTurn(false,1);break;}}}},{passive:false});el.addEventListener('touchmove',e=>{e.preventDefault();},{passive:false});};
     add(L,true);add(R,false);
+    
+    // Prevent pull-to-refresh and scrolling on game area
+    document.getElementById('gamewrap').addEventListener('touchmove',e=>e.preventDefault(),{passive:false});
 }
 
 // ============ THREE ============
