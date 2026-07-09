@@ -34,8 +34,9 @@ function connectWebSocket() {
     // Try to connect to localhost first, then fall back to window.location
     const protocols = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
-    const port = window.location.port === '8000' ? '8080' : window.location.port;
-    const wsUrl = `${protocols}//${host}:${port}`;
+    // If running on Deno Deploy (no port), use same origin. Local dev: HTTP on 8000 → WS on 8080.
+    const port = window.location.port ? (window.location.port === '8000' ? '8080' : window.location.port) : '';
+    const wsUrl = port ? `${protocols}//${host}:${port}` : `${protocols}//${host}`;
     
     console.log(`Connecting to WebSocket: ${wsUrl}`);
     
@@ -482,8 +483,8 @@ function joinGame() {
     // Hide name input
     document.getElementById('name-input').style.display = 'none';
     
-    // Send join message with name
-    sendMessage({ type: 'join', name });
+    // Send profile update to set name (server expects 'update_profile')
+    sendMessage({ type: 'update_profile', name });
 }
 
 function respawn() {

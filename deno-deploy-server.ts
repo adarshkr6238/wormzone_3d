@@ -526,6 +526,8 @@ app.use(async (ctx, next) => {
       console.log(`🎯 Total players: ${gameState.getPlayerCount()}`);
       
       sockets.set(playerId, socket);
+      // Attach playerId to socket for later lookup
+      (socket as any).playerId = playerId;
       
       // Send initial state with chat history
       socket.send(JSON.stringify({
