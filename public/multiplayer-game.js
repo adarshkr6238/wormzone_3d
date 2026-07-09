@@ -583,21 +583,20 @@ function animate() {
 connectWebSocket();
 
 // Initialize Three.js
-document.addEventListener('DOMContentLoaded', init);
+document.addEventListener('DOMContentLoaded', () => { init(); bindJoinButton(); });
 
-// Bind join button
-const joinBtn=document.getElementById('join-btn');
-if(joinBtn){
-  joinBtn.addEventListener('click',()=>{
-    const nameEl=document.getElementById('player-name');
-    const name=nameEl?.value.trim()||'Player-'+Math.random().toString(36).slice(2,6);
-    // Send join (server accepts name field regardless of type)
-    sendMessage({type:'join',name});
-    // Hide name input UI
-    const nameDiv=document.getElementById('name-input');
-    if(nameDiv) nameDiv.style.display='none';
-    // Show game container (already visible)
-  });
+// Bind join button after DOM is ready
+function bindJoinButton(){
+  const joinBtn=document.getElementById('join-btn');
+  if(joinBtn){
+    joinBtn.addEventListener('click',()=>{
+      const nameEl=document.getElementById('player-name');
+      const name=nameEl?.value.trim()||'Player-'+Math.random().toString(36).slice(2,6);
+      sendMessage({type:'join',name});
+      const nameDiv=document.getElementById('name-input');
+      if(nameDiv) nameDiv.style.display='none';
+    });
+  }
 }
 
 // Auto-focus name input
