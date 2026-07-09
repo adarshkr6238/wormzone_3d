@@ -53,7 +53,14 @@ function connectWebSocket() {
             handleMessage(message);
         };
         
-        ws.onclose = () => {
+        ws.onclose = (event) => {
+        console.log('WebSocket closed', event);
+        console.log('Code:', event.code, 'Reason:', event.reason);
+        // Show disconnected status
+        updateConnectionStatus('❌ Disconnected', false);
+        // Try to reconnect after 3 seconds
+        setTimeout(connectWebSocket, 3000);
+    }
             console.log('WebSocket disconnected');
             updateConnectionStatus('❌ Disconnected', false);
             // Try to reconnect after 3 seconds
@@ -61,6 +68,9 @@ function connectWebSocket() {
         };
         
         ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        updateConnectionStatus('⚠️ Error', false);
+    }
             console.error('WebSocket error:', error);
             updateConnectionStatus('⚠️ Error', false);
         };
