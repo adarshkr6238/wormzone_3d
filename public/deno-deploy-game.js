@@ -1,1018 +1,321 @@
-// Wormzone 3D - Enhanced Multiplayer Game Client for Deno Deploy
-// Features: Name/Color selection, Live Scoreboard, Player Names above snakes, Chat
+// Wormzone 3D - Multiplayer Client (Fixed & Complete)
 
 import * as THREE from 'three';
 
-// ============================================================================
-// Configuration
-// ============================================================================
-
+// ============ CONFIG ============
 const WORLD_SIZE = 250;
-const ROTATION_SPEED = 0.05;
+const SNAKE_COLORS = [0x4CAF50,0x2196F3,0xFFC107,0xFF5722,0x9C27B0,0x00BCD4,0xE91E63,0xFF9800,0x009688,0x673AB7,0x3F51B5,0xF44336];
 
-// Available snake colors
-const SNAKE_COLORS = [
-    0x4CAF50, 0x2196F3, 0xFFC107, 0xFF5722,
-    0x9C27B0, 0x00BCD4, 0xE91E63, 0xFF9800,
-    0x009688, 0x673AB7, 0x3F51B5, 0xF44336,
-];
-
-// ============================================================================
-// Game State
-// ============================================================================
-
+// ============ STATE ============
 let scene, camera, renderer;
-let players = {};
-let myPlayerId = null;
-let myPlayer = null;
-let foods = [];
-let powerups = [];
+const players = {};
+let myPlayerId = null, myPlayer = null;
+const foods = [], powerups = [];
 let cameraMode = 'thirdPerson';
-let keys = { a: false, d: false, left: false, right: false };
+const keys = {a:false,d:false,left:false,right:false};
 let ws = null;
 let isGameOver = false;
-let gameStartTime = Date.now();
-let lastInputTime = 0;
-let inputThrottle = 50;
-
-// Chat state
+let lastInput = 0;
+const THROTTLE = 50;
 let chatOpen = false;
-let chatMessages = [];
-let chatHistory = [];
-
-// Scoreboard
-let scoreboardData = {};
-
-// Selected color (default green)
+const chatMsgs = [];
 let selectedColor = 0x4CAF50;
+const scoreData = {};
+let foodMeshes = [], pupMeshes = [];
 
-// ============================================================================
-// WebSocket Connection
-// ============================================================================
+// ============ WS ============
+function connect() {
+    const url = location.protocol==='https:'?`wss://${location.host}`:`ws://${location.host}`;
+    console.log('WS:', url);
+    setStatus('Connecting...', false);
+    ws = new WebSocket(url);
+    ws.onopen = () => { console.log('WS open'); setStatus('Connected ✓', true); };
+    ws.onmessage = e => { try{handleMsg(JSON.parse(e.data))}catch(err){console.error(err)} };
+    ws.onclose = () => { console.log('WS closed'); setStatus('Disconnected', false); setTimeout(connect, 3000); };
+    ws.onerror = e => { console.error(e); setStatus('Error', false); };
+}
 
-function connectWebSocket() {
-    let wsUrl;
-    
-    if (window.location.protocol === 'https:') {
-        wsUrl = `wss://${window.location.host}`;
-    } else {
-        wsUrl = `ws://${window.location.host}`;
-    }
-    
-    console.log(`Connecting to WebSocket: ${wsUrl}`);
-    updateConnectionStatus('⭐ Connecting...', false);
-    
-    try {
-        ws = new WebSocket(wsUrl);
-        
-        ws.onopen = () => {
-            console.log('WebSocket connected!');
-            updateConnectionStatus('✅ Connected', true);
-        };
-        
-        ws.onmessage = (event) => {
-            const message = JSON.parse(event.data);
-            handleMessage(message);
-        };
-        
-        ws.onclose = () => {
-            console.log('WebSocket disconnected');
-            updateConnectionStatus('❌ Disconnected', false);
-            setTimeout(connectWebSocket, 3000);
-        };
-        
-        ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            updateConnectionStatus('⚠️ Error', false);
-        };
-    } catch (error) {
-        console.error('Failed to create WebSocket:', error);
-        updateConnectionStatus('❌ Failed to connect', false);
-        setTimeout(connectWebSocket, 3000);
+function send(obj){ if(ws?.readyState===WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
+
+function handleMsg(m){
+    switch(m.type){
+        case 'init': myPlayerId=m.playerId; console.log('My ID:',myPlayerId); if(m.chatHistory){chatMsgs.push(...m.chatHistory); renderChat();} break;
+        case 'state': applyState(m.data); break;
+        case 'player_joined': console.log('Joined:',m.data.playerId); break;
+        case 'player_left': removePlayer(m.data.playerId); break;
+        case 'player_updated': updProfile(m.data.playerId,m.data.name,m.data.color); break;
+        case 'scoreboard': Object.assign(scoreData,m.data); renderScore(); break;
+        case 'chat': chatMsgs.push(m.data); if(chatMsgs.length>100)chatMsgs.shift(); renderChat(); break;
+        case 'game_over': showWinner(m.data.winner,m.data.scores); break;
     }
 }
 
-function sendMessage(message) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(message));
+function setStatus(t,ok){ const s=document.getElementById('conn'); if(s){s.textContent=t;s.className=ok?'ok':'bad';} }
+
+// ============ PLAYER ============
+function addPlayer(id,d){
+    if(players[id]) return;
+    const p={id,name:d.name||'Player',color:d.color||0x4CAF50,dir:d.direction||0,segs:d.segments||[],score:d.score||0,alive:d.isAlive!==false,head:null,body:[],lbl:null,slbl:null};
+    players[id]=p; buildMesh(p); buildLbl(p);
+}
+
+function buildMesh(p){
+    const g=new THREE.SphereGeometry(0.5,32,32), mt=new THREE.MeshPhongMaterial({color:p.color});
+    p.head=new THREE.Mesh(g,mt); p.head.castShadow=true; scene.add(p.head);
+    const eg=new THREE.SphereGeometry(0.1,8,8), em=new THREE.MeshBasicMaterial({color:0xffffff});
+    const el=new THREE.Mesh(eg,em); el.position.set(0.2,0.2,0.35); p.head.add(el);
+    const er=el.clone(); er.position.x=-0.2; p.head.add(er);
+    const hl=new THREE.PointLight(0xffffff,2,20); p.head.add(hl);
+    p.body=[]; for(let i=0;i<p.segs.length;i++) addSeg(p,i);
+}
+
+function addSeg(p,i){
+    const g=new THREE.SphereGeometry(0.45,16,16);
+    const c=new THREE.Color(p.color).lerp(new THREE.Color(0xffffff),0.05*i/10);
+    const m=new THREE.MeshPhongMaterial({color:c});
+    const s=new THREE.Mesh(g,m); s.castShadow=true; scene.add(s); p.body.push(s);
+}
+
+function buildLbl(p){
+    p.lbl=mkSprite(mkNameCvs(p.name,p.color));
+    p.slbl=mkSprite(mkScoreCvs(p.score));
+    scene.add(p.lbl); scene.add(p.slbl);
+}
+
+function mkSprite(tex){ return new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false})); }
+
+function mkNameCvs(txt,col){
+    const cvs=document.createElement('canvas'), ctx=cvs.getContext('2d');
+    ctx.font='bold 28px Arial'; const tw=ctx.measureText(txt).width, pad=20, w=tw+pad*2, h=64;
+    cvs.width=w; cvs.height=h;
+    ctx.fillStyle='#'+col.toString(16).padStart(6,'0'); ctx.globalAlpha=0.9; ctx.fillRect(0,0,w,h); ctx.globalAlpha=1;
+    ctx.strokeStyle='#fff'; ctx.lineWidth=3; ctx.strokeRect(1.5,1.5,w-3,h-3);
+    ctx.fillStyle='#fff'; ctx.font='bold 28px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(txt,w/2,h/2);
+    const t=new THREE.CanvasTexture(cvs); t.needsUpdate=true; return t;
+}
+
+function mkScoreCvs(sc){
+    const cvs=document.createElement('canvas'), ctx=cvs.getContext('2d');
+    const txt='Score: '+sc; ctx.font='bold 24px Arial'; const tw=ctx.measureText(txt).width, pad=15, w=tw+pad*2, h=48;
+    cvs.width=w; cvs.height=h;
+    ctx.fillStyle='rgba(0,0,0,0.8)'; ctx.fillRect(0,0,w,h);
+    ctx.strokeStyle='#ffeb3b'; ctx.lineWidth=2; ctx.strokeRect(1,1,w-2,h-2);
+    ctx.fillStyle='#ffeb3b'; ctx.font='bold 24px Arial'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(txt,w/2,h/2);
+    const t=new THREE.CanvasTexture(cvs); t.needsUpdate=true; return t;
+}
+
+function updProfile(id,n,c){
+    const p=players[id]; if(!p) return;
+    if(n!==undefined){p.name=n; updNameLbl(p);}
+    if(c!==undefined){p.color=c; p.head.material.color.setHex(c); p.body.forEach((s,i)=>s.material.color.copy(new THREE.Color(c).lerp(new THREE.Color(0xffffff),0.05*i/10))); updNameLbl(p);}
+}
+
+function updNameLbl(p){
+    if(!p.lbl) return; p.lbl.material.map.dispose(); p.lbl.material.map=mkNameCvs(p.name,p.color); p.lbl.material.needsUpdate=true;
+    const c=document.createElement('canvas'),ctx=c.getContext('2d'); ctx.font='bold 28px Arial'; const tw=ctx.measureText(p.name).width; p.lbl.scale.set((tw+40)/100,64/100,1);
+}
+
+function applyState(st){
+    for(const id in st.players){
+        const d=st.players[id];
+        if(!players[id]) addPlayer(id,d); else updPlayer(id,d);
+        if(id===myPlayerId) myPlayer=players[id];
     }
+    for(const id in players) if(!st.players[id]) removePlayer(id);
+    foods.length=0; foods.push(...(st.foods||[])); updFoods();
+    powerups.length=0; powerups.push(...(st.powerups||[])); updPups();
+    if(myPlayer) document.getElementById('score').textContent='Score: '+myPlayer.score;
+    if(myPlayer && !myPlayer.alive) gameOver();
 }
 
-function handleMessage(message) {
-    switch (message.type) {
-        case 'init':
-            myPlayerId = message.playerId;
-            console.log(`Initialized with player ID: ${myPlayerId}`);
-            
-            if (message.chatHistory) {
-                chatHistory = message.chatHistory;
-                updateChatDisplay();
-            }
-            break;
-            
-        case 'state':
-            updateGameState(message.data);
-            break;
-            
-        case 'player_joined':
-            console.log(`Player joined: ${message.data.playerId}`);
-            break;
-            
-        case 'player_left':
-            console.log(`Player left: ${message.data.playerId}`);
-            removePlayer(message.data.playerId);
-            break;
-            
-        case 'player_updated':
-            updatePlayerProfile(message.data.playerId, message.data.name, message.data.color);
-            break;
-            
-        case 'scoreboard':
-            scoreboardData = message.data;
-            updateScoreboard(message.data);
-            break;
-            
-        case 'chat':
-            addChatMessage(message.data);
-            break;
-            
-        case 'game_over':
-            showWinner(message.data.winner, message.data.scores);
-            break;
+function updPlayer(id,d){
+    const p=players[id]; if(!p) return;
+    p.name=d.name||p.name; p.color=d.color||p.color; p.dir=d.direction||p.dir; p.score=d.score||p.score; p.alive=d.isAlive!==false; p.segs=d.segments||p.segs;
+    if(p.head && d.segments?.[0]){
+        const hp=d.segments[0].position; p.head.position.set(hp.x,hp.y,hp.z); p.head.rotation.y=d.direction||0;
     }
-}
-
-function updateConnectionStatus(text, connected) {
-    const statusEl = document.getElementById('connection-status');
-    if (statusEl) {
-        statusEl.innerText = text;
-        statusEl.className = connected ? '' : 'disconnected';
+    while(p.body.length<p.segs.length) addSeg(p,p.body.length);
+    for(let i=0;i<Math.min(p.segs.length,p.body.length);i++){
+        const s=p.segs[i], m=p.body[i]; if(s&&m){m.position.set(s.position.x,s.position.y,s.position.z); if(i>0){const ps=p.segs[i-1]; if(ps)m.lookAt(ps.position.x,ps.position.y,ps.position.z);}}
     }
+    for(let i=p.segs.length;i<p.body.length;i++) p.body[i].visible=false;
+    if(p.lbl) p.lbl.visible=p.alive; if(p.slbl) p.slbl.visible=p.alive;
 }
 
-// ============================================================================
-// Player Management
-// ============================================================================
-
-function addPlayer(playerId, playerData) {
-    if (players[playerId]) return;
-    
-    const player = {
-        id: playerId,
-        name: playerData.name || `Player-${playerId.substring(0, 4)}`,
-        color: playerData.color || 0x4CAF50,
-        direction: playerData.direction || 0,
-        segments: playerData.segments || [],
-        score: playerData.score || 0,
-        isAlive: playerData.isAlive !== false,
-        head: null,
-        segmentsMeshes: [],
-        nameLabel: null,
-        scoreLabel: null,
-    };
-    
-    players[playerId] = player;
-    createPlayerMesh(player);
-    createNameLabels(player);
-    
-    console.log(`Added player: ${playerId} (${player.name})`);
+function removePlayer(id){
+    const p=players[id]; if(!p) return;
+    scene.remove(p.head); p.body.forEach(s=>scene.remove(s)); scene.remove(p.lbl); scene.remove(p.slbl);
+    delete players[id]; if(id===myPlayerId) myPlayer=null;
 }
 
-function createPlayerMesh(player) {
-    // Create head
-    const headGeo = new THREE.SphereGeometry(0.5, 32, 32);
-    const headMat = new THREE.MeshPhongMaterial({ color: player.color });
-    player.head = new THREE.Mesh(headGeo, headMat);
-    player.head.castShadow = true;
-    scene.add(player.head);
-    
-    // Add eyes
-    const eyeGeo = new THREE.SphereGeometry(0.1, 8, 8);
-    const eyeMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
-    eyeL.position.set(0.2, 0.2, 0.35);
-    player.head.add(eyeL);
-    const eyeR = eyeL.clone();
-    eyeR.position.x = -0.2;
-    player.head.add(eyeR);
-    
-    // Add light to head
-    const headLight = new THREE.PointLight(0xffffff, 2, 20);
-    player.head.add(headLight);
-    
-    // Create segments
-    player.segmentsMeshes = [];
-    for (let i = 0; i < player.segments.length; i++) {
-        addSegmentMesh(player, i);
-    }
+// ============ FOOD/PUP ============
+function updFoods(){ foodMeshes.forEach(m=>scene.remove(m)); foodMeshes=[]; foods.forEach(f=>{const g=new THREE.SphereGeometry(0.35,16,16),mt=new THREE.MeshPhongMaterial({color:0xffeb3b,emissive:0xffeb3b,emissiveIntensity:0.6}),o=new THREE.Mesh(g,mt); o.position.set(f.position.x,f.position.y,f.position.z); scene.add(o); foodMeshes.push(o);}); }
+function updPups(){ pupMeshes.forEach(m=>scene.remove(m)); pupMeshes=[]; powerups.forEach(p=>{const c=p.type==='multiplier'?0xff4081:0x00e5ff,g=new THREE.SphereGeometry(0.6,16,16),mt=new THREE.MeshPhongMaterial({color:c,emissive:c,emissiveIntensity:0.6}),o=new THREE.Mesh(g,mt); o.position.set(p.position.x,p.position.y,p.position.z); scene.add(o); pupMeshes.push(o);}); }
+
+// ============ SCOREBOARD ============
+function renderScore(){
+    const el=document.getElementById('scoreboard'); if(!el) return;
+    const arr=Object.entries(scoreData).sort((a,b)=>b[1].score-a[1].score);
+    let h=''; arr.forEach(([id,d],i)=>{const me=id===myPlayerId,c=new THREE.Color(d.color).getStyle();h+=`<div class="sb-row ${me?'me':''}"><span class="rk">${i===0?'🥇':i===1?'🥈':i===2?'🥉':i+1+'.'}</span><div class="pi"><span class="pc" style="background:${c}"></span><span class="pn">${d.name}${me?' (YOU)':''}${d.isAlive?'':' 💀'}</span></div><span class="ps">${d.score}</span></div>`;});
+    el.innerHTML=h||'<div style="color:#666;text-align:center;padding:10px">Waiting for players...</div>';
 }
 
-function addSegmentMesh(player, index) {
-    const segGeo = new THREE.SphereGeometry(0.45, 16, 16);
-    const color = new THREE.Color(player.color);
-    color.lerp(new THREE.Color(0xffffff), 0.05 * (index / 10));
-    const segMat = new THREE.MeshPhongMaterial({ color: color });
-    const segment = new THREE.Mesh(segGeo, segMat);
-    segment.castShadow = true;
-    scene.add(segment);
-    player.segmentsMeshes.push(segment);
+// ============ CHAT ============
+function renderChat(){
+    const el=document.getElementById('chatlog'); if(!el) return;
+    el.innerHTML=chatMsgs.map(m=>{const t=new Date(m.timestamp).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}),c=new THREE.Color(m.color).getStyle(),me=m.playerId===myPlayerId;return `<div class="cm ${me?'me':''}"><span class="ct">[${t}]</span><span class="cn" style="color:${c}">${m.name}</span><span class="ctxt">${esc(m.message)}</span></div>`;}).join('');
+    el.scrollTop=el.scrollHeight;
 }
 
-function createNameLabels(player) {
-    // Name label (above head)
-    const nameCanvas = createLabelCanvas(player.name, `#${player.color.toString(16).padStart(6, '0')}`);
-    const nameTexture = new THREE.CanvasTexture(nameCanvas);
-    nameTexture.needsUpdate = true;
-    const nameMaterial = new THREE.SpriteMaterial({ 
-        map: nameTexture, 
-        transparent: true,
-        depthTest: false,
-    });
-    player.nameLabel = new THREE.Sprite(nameMaterial);
-    player.nameLabel.scale.set(nameCanvas.width / 100, nameCanvas.height / 100, 1);
-    scene.add(player.nameLabel);
-    
-    // Score label (below name)
-    const scoreCanvas = createScoreLabelCanvas(player.score);
-    const scoreTexture = new THREE.CanvasTexture(scoreCanvas);
-    scoreTexture.needsUpdate = true;
-    const scoreMaterial = new THREE.SpriteMaterial({ 
-        map: scoreTexture, 
-        transparent: true,
-        depthTest: false,
-    });
-    player.scoreLabel = new THREE.Sprite(scoreMaterial);
-    player.scoreLabel.scale.set(scoreCanvas.width / 100, scoreCanvas.height / 100, 1);
-    scene.add(player.scoreLabel);
+function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
+
+function toggleChat(){
+    chatOpen=!chatOpen;
+    const p=document.getElementById('chatpanel'),b=document.getElementById('chatbtn'),i=document.getElementById('chatinput');
+    if(chatOpen){p.style.display='flex';i.focus();b.textContent='💬 Close';b.classList.add('on');}
+    else{p.style.display='none';b.textContent='💬 Chat';b.classList.remove('on');}
 }
 
-function createLabelCanvas(text, bgColor, textColor = '#ffffff') {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    canvas.width = 256;
-    canvas.height = 64;
-    
-    ctx.font = 'bold 28px Arial';
-    const textWidth = ctx.measureText(text).width;
-    const padding = 20;
-    const width = textWidth + padding * 2;
-    canvas.width = width;
-    
-    // Background
-    ctx.fillStyle = bgColor;
-    ctx.globalAlpha = 0.85;
-    ctx.fillRect(0, 0, width, 64);
-    ctx.globalAlpha = 1;
-    
-    // Border
-    ctx.strokeStyle = '#ffffff';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(1.5, 1.5, width - 3, 61);
-    
-    // Text
-    ctx.fillStyle = textColor;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, width / 2, 32);
-    
-    return canvas;
+function sendChatMsg(){
+    const i=document.getElementById('chatinput');
+    if(i?.value.trim() && ws?.readyState===WebSocket.OPEN){send({type:'chat',message:i.value.trim()});i.value='';}
 }
 
-function createScoreLabelCanvas(score, textColor = '#ffeb3b') {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
-    const text = `Score: ${score}`;
-    ctx.font = 'bold 24px Arial';
-    const textWidth = ctx.measureText(text).width;
-    const padding = 15;
-    const width = textWidth + padding * 2;
-    const height = 56;
-    canvas.width = width;
-    canvas.height = height;
-    
-    // Background
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
-    ctx.fillRect(0, 0, width, height);
-    ctx.strokeStyle = textColor;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(1, 1, width - 2, height - 2);
-    
-    // Text
-    ctx.fillStyle = textColor;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(text, width / 2, height / 2);
-    
-    return canvas;
+function handleChatKey(e){if(e.key==='Enter')sendChatMsg();else if(e.key==='Escape')toggleChat();}
+
+// ============ JOIN MODAL ============
+function buildColorPicker(){
+    const c=document.getElementById('colorPicker'); if(!c) return;
+    c.innerHTML=SNAKE_COLORS.map(col=>{const h=col.toString(16).padStart(6,'0');const sel=col===selectedColor;return `<div class="co ${sel?'sel':''}" style="background:#${h}" data-c="${col}" onclick="pickColor(this,${col})"></div>`;}).join('');
 }
 
-function updatePlayerProfile(playerId, name, color) {
-    const player = players[playerId];
-    if (!player) return;
-    
-    if (name !== undefined) {
-        player.name = name;
-        if (player.nameLabel) {
-            updateNameLabel(player);
-        }
-    }
-    if (color !== undefined) {
-        player.color = color;
-        // Update head color
-        if (player.head) {
-            player.head.material.color.setHex(color);
-        }
-        // Update segment colors
-        for (let i = 0; i < player.segmentsMeshes.length; i++) {
-            const segment = player.segmentsMeshes[i];
-            const segColor = new THREE.Color(color);
-            segColor.lerp(new THREE.Color(0xffffff), 0.05 * (i / 10));
-            segment.material.color.copy(segColor);
-        }
-        if (player.nameLabel) {
-            updateNameLabel(player);
-        }
-    }
+function pickColor(el,col){selectedColor=col;document.querySelectorAll('.co').forEach(x=>x.classList.remove('sel'));el.classList.add('sel');}
+
+function doJoin(){
+    const n=document.getElementById('pname');
+    const name=n?.value.trim()||'Player-'+Math.random().toString(36).slice(2,6);
+    document.getElementById('joinModal').style.display='none';
+    send({type:'join',name,color:selectedColor});
+    document.getElementById('gamewrap').style.display='block';
 }
 
-function updateNameLabel(player) {
-    if (!player.nameLabel) return;
-    
-    const canvas = createLabelCanvas(player.name, `#${player.color.toString(16).padStart(6, '0')}`);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.needsUpdate = true;
-    player.nameLabel.material.map = texture;
-    player.nameLabel.material.needsUpdate = true;
-    player.nameLabel.scale.set(canvas.width / 100, canvas.height / 100, 1);
+function showJoinModal(){
+    document.getElementById('joinModal').style.display='flex';
+    buildColorPicker();
+    const n=document.getElementById('pname'); if(n) n.focus();
 }
 
-function updateScoreLabel(player) {
-    if (!player.scoreLabel) return;
-    
-    const score = scoreboardData[player.id]?.score || player.score || 0;
-    
-    const canvas = createScoreLabelCanvas(score);
-    const texture = new THREE.CanvasTexture(canvas);
-    texture.needsUpdate = true;
-    player.scoreLabel.material.map = texture;
-    player.scoreLabel.material.needsUpdate = true;
-    player.scoreLabel.scale.set(canvas.width / 100, canvas.height / 100, 1);
+// ============ GAME OVER / WINNER ============
+function showWinner(wid,scores){
+    const w=players[wid]; const wn=w?w.name:'Player';
+    const ov=document.getElementById('winov');
+    if(ov){ov.style.display='block';ov.textContent='🏆 '+wn+' WINS! 🏆';}
+    const go=document.getElementById('go');
+    if(go){go.style.display='block';document.getElementById('fscore').textContent=myPlayer?.score||0;}
+    isGameOver=true;
+    setTimeout(()=>{if(ov)ov.style.display='none';},5000);
 }
 
-function updatePlayer(playerId, playerData) {
-    const player = players[playerId];
-    if (!player) return;
-    
-    // Update player data
-    player.name = playerData.name || player.name;
-    player.color = playerData.color || player.color;
-    player.direction = playerData.direction || player.direction;
-    player.score = playerData.score || player.score;
-    player.isAlive = playerData.isAlive !== false;
-    player.segments = playerData.segments || player.segments;
-    
-    // Update head position
-    if (player.head && playerData.segments && playerData.segments.length > 0) {
-        const headPos = playerData.segments[0].position;
-        player.head.position.set(headPos.x, headPos.y, headPos.z);
-        player.head.rotation.y = playerData.direction || 0;
-    }
-    
-    // Update segments
-    while (player.segmentsMeshes.length < player.segments.length) {
-        addSegmentMesh(player, player.segmentsMeshes.length);
-    }
-    
-    for (let i = 0; i < Math.min(player.segments.length, player.segmentsMeshes.length); i++) {
-        const segment = player.segments[i];
-        const mesh = player.segmentsMeshes[i];
-        if (segment && mesh) {
-            mesh.position.set(segment.position.x, segment.position.y, segment.position.z);
-            if (i > 0) {
-                const prevSegment = player.segments[i - 1];
-                if (prevSegment) {
-                    mesh.lookAt(prevSegment.position.x, prevSegment.position.y, prevSegment.position.z);
-                }
-            }
-        }
-    }
-    
-    // Hide extra segments
-    for (let i = player.segments.length; i < player.segmentsMeshes.length; i++) {
-        player.segmentsMeshes[i].visible = false;
-    }
-    
-    // Update name/score labels
-    updateNameLabel(player);
-    updateScoreLabel(player);
-    
-    // Update label visibility based on alive status
-    if (player.nameLabel) player.nameLabel.visible = player.isAlive;
-    if (player.scoreLabel) player.scoreLabel.visible = player.isAlive;
-    
-    if (playerId === myPlayerId) {
-        myPlayer = player;
-    }
+function gameOver(){
+    if(isGameOver) return;
+    isGameOver=true;
+    const go=document.getElementById('go');
+    if(go){go.style.display='block';document.getElementById('fscore').textContent=myPlayer?.score||0;}
 }
 
-function removePlayer(playerId) {
-    const player = players[playerId];
-    if (!player) return;
-    
-    // Remove meshes
-    if (player.head) scene.remove(player.head);
-    for (const mesh of player.segmentsMeshes) scene.remove(mesh);
-    if (player.nameLabel) scene.remove(player.nameLabel);
-    if (player.scoreLabel) scene.remove(player.scoreLabel);
-    
-    // Dispose textures
-    if (player.nameLabel?.material?.map) player.nameLabel.material.map.dispose();
-    if (player.scoreLabel?.material?.map) player.scoreLabel.material.map.dispose();
-    
-    delete players[playerId];
-    
-    if (playerId === myPlayerId) {
-        myPlayer = null;
-    }
-    
-    console.log(`Removed player: ${playerId}`);
+function respawn(){
+    document.getElementById('go').style.display='none';
+    document.getElementById('winov').style.display='none';
+    isGameOver=false;
+    send({type:'respawn'});
 }
 
-// ============================================================================
-// Scoreboard
-// ============================================================================
-
-function updateScoreboard(scoreboard) {
-    scoreboardData = scoreboard;
-    const scoreboardEl = document.getElementById('scoreboard');
-    if (!scoreboardEl) return;
-    
-    const sortedPlayers = Object.entries(scoreboard)
-        .sort((a, b) => b[1].score - a[1].score);
-    
-    let html = '';
-    for (let i = 0; i < sortedPlayers.length; i++) {
-        const [id, data] = sortedPlayers[i];
-        const isMe = id === myPlayerId;
-        const color = new THREE.Color(data.color).getStyle();
-        const medal = i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `${i + 1}.`;
-        const aliveIcon = data.isAlive ? '' : ' 💀';
-        const meIndicator = isMe ? ' <span style="color: #00e5ff;">(YOU)</span>' : '';
-        
-        html += `
-            <div class="scoreboard-entry ${isMe ? 'me' : ''}">
-                <span class="rank">${medal}</span>
-                <div class="player-info">
-                    <span class="player-color" style="background-color: ${color}"></span>
-                    <span class="player-name">${data.name}${meIndicator}${aliveIcon}</span>
-                </div>
-                <span class="player-score">${data.score}</span>
-            </div>
-        `;
-    }
-    
-    scoreboardEl.innerHTML = html;
+// ============ CONTROLS ============
+function handleKey(k,down){
+    if(chatOpen) return;
+    k=k.toLowerCase();
+    if(k==='a'||k==='arrowleft'){keys.left=down;sendTurn(down,-1);}
+    if(k==='d'||k==='arrowright'){keys.right=down;sendTurn(down,1);}
+    if(k==='c')toggleCamera();
+    if(k==='enter'&&!chatOpen)toggleChat();
 }
 
-// ============================================================================
-// Chat System
-// ============================================================================
-
-function addChatMessage(message) {
-    chatMessages.push(message);
-    chatHistory.push(message);
-    
-    if (chatMessages.length > 50) {
-        chatMessages.shift();
-    }
-    
-    updateChatDisplay();
+function sendTurn(down,dir){
+    const now=Date.now();
+    if(now-lastInput>THROTTLE && myPlayerId){send({type:'turn',direction:down?dir:0});lastInput=now;}
 }
 
-function updateChatDisplay() {
-    const chatEl = document.getElementById('chat-log');
-    if (!chatEl) return;
-    
-    let html = '';
-    for (const msg of chatMessages.slice(-50)) {
-        const time = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-        const isMe = msg.playerId === myPlayerId;
-        const color = new THREE.Color(msg.color).getStyle();
-        
-        html += `
-            <div class="chat-message ${isMe ? 'own' : ''}">
-                <span class="chat-time">[${time}]</span>
-                <span class="chat-name" style="color: ${color}">${msg.name}</span>
-                <span class="chat-text">${escapeHtml(msg.message)}</span>
-            </div>
-        `;
-    }
-    
-    chatEl.innerHTML = html;
-    chatEl.scrollTop = chatEl.scrollHeight;
+function toggleCamera(){cameraMode=cameraMode==='thirdPerson'?'topDown':'thirdPerson';}
+
+function toggleChat(){
+    chatOpen=!chatOpen;
+    const p=document.getElementById('chatpanel'),b=document.getElementById('chatbtn'),i=document.getElementById('chatinput');
+    if(chatOpen){p.style.display='flex';i.focus();b.textContent='💬 Close';b.classList.add('on');}
+    else{p.style.display='none';b.textContent='💬 Chat';b.classList.remove('on');}
 }
 
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
+// ============ TOUCH ============
+function setupTouch(){
+    const L=document.getElementById('tl'),R=document.getElementById('tr');
+    const touch=(left,active)=>{if(left)keys.left=active;else keys.right=active;const now=Date.now();if(now-lastInput>THROTTLE&&myPlayerId){send({type:'turn',direction:active?(left?-1:1):0});lastInput=now;}};
+    const add=(el,left)=>{el.addEventListener('touchstart',e=>{e.preventDefault();touch(left,true);},{passive:false});el.addEventListener('touchend',e=>{e.preventDefault();touch(left,false);},{passive:false});el.addEventListener('touchcancel',e=>{e.preventDefault();touch(left,false);},{passive:false});el.addEventListener('touchmove',e=>{e.preventDefault();const t=e.touches[0];const tgt=document.elementFromPoint(t.clientX,t.clientY);if(tgt!==el)touch(left,false);},{passive:false});};
+    add(L,true);add(R,false);
 }
 
-function toggleChat() {
-    chatOpen = !chatOpen;
-    const chatPanel = document.getElementById('chat-panel');
-    const chatInput = document.getElementById('chat-input');
-    const chatBtn = document.getElementById('chat-btn');
-    
-    if (chatPanel) {
-        chatPanel.style.display = chatOpen ? 'flex' : 'none';
-        if (chatOpen && chatInput) {
-            chatInput.focus();
-        }
-        if (chatBtn) {
-            chatBtn.innerText = chatOpen ? '💬 Close Chat' : '💬 Chat';
-            chatBtn.classList.toggle('active', chatOpen);
-        }
-    }
-}
-
-function sendChatMessage() {
-    const chatInput = document.getElementById('chat-input');
-    if (!chatInput) return;
-    
-    const message = chatInput.value.trim();
-    if (message) {
-        sendMessage({ type: 'chat', message });
-        chatInput.value = '';
-    }
-}
-
-function handleChatInput(e) {
-    if (e.key === 'Enter') {
-        sendChatMessage();
-    } else if (e.key === 'Escape') {
-        toggleChat();
-    }
-}
-
-// ============================================================================
-// Name/Color Selection
-// ============================================================================
-
-function initColorPicker() {
-    const container = document.getElementById('color-options');
-    if (!container) return;
-    
-    container.innerHTML = '';
-    
-    for (let i = 0; i < SNAKE_COLORS.length; i++) {
-        const color = SNAKE_COLORS[i];
-        const option = document.createElement('div');
-        option.className = 'color-option' + (color === selectedColor ? ' selected' : '');
-        option.style.background = `#${color.toString(16).padStart(6, '0')}`;
-        option.dataset.color = color;
-        option.onclick = () => selectColor(color, option);
-        container.appendChild(option);
-    }
-}
-
-function selectColor(color, element) {
-    selectedColor = color;
-    document.querySelectorAll('.color-option').forEach(el => el.classList.remove('selected'));
-    element.classList.add('selected');
-}
-
-function showNameColorDialog() {
-    const dialog = document.getElementById('name-color-modal');
-    if (dialog) {
-        dialog.style.display = 'flex';
-        const nameInput = document.getElementById('player-name');
-        if (nameInput) nameInput.focus();
-    }
-}
-
-function joinGame() {
-    const nameInput = document.getElementById('player-name');
-    let name = nameInput ? nameInput.value.trim() : '';
-    
-    if (!name) {
-        name = `Player-${Math.random().toString(36).substring(2, 6)}`;
-    }
-    
-    // Hide dialog
-    const dialog = document.getElementById('name-color-modal');
-    if (dialog) dialog.style.display = 'none';
-    
-    // Send join message with name and color
-    sendMessage({ 
-        type: 'join', 
-        name, 
-        color: selectedColor 
-    });
-    
-    // Update local player
-    if (myPlayerId && players[myPlayerId]) {
-        players[myPlayerId].name = name;
-        players[myPlayerId].color = selectedColor;
-        updateNameLabel(players[myPlayerId]);
-    }
-}
-
-// ============================================================================
-// Food & Powerup Management
-// ============================================================================
-
-let foodMeshes = [];
-let powerupMeshes = [];
-
-function updateFoods() {
-    for (const mesh of foodMeshes) scene.remove(mesh);
-    foodMeshes = [];
-    
-    for (const food of foods) {
-        const geo = new THREE.SphereGeometry(0.35, 16, 16);
-        const mat = new THREE.MeshPhongMaterial({ 
-            color: 0xffeb3b, 
-            emissive: 0xffeb3b, 
-            emissiveIntensity: 0.6 
-        });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(food.position.x, food.position.y + Math.sin(Date.now() * 0.005) * 0.15, food.position.z);
-        scene.add(mesh);
-        foodMeshes.push(mesh);
-    }
-}
-
-function updatePowerups() {
-    for (const mesh of powerupMeshes) scene.remove(mesh);
-    powerupMeshes = [];
-    
-    for (const powerup of powerups) {
-        let color = 0x00e5ff;
-        if (powerup.type === 'multiplier') color = 0xff4081;
-        
-        const geo = new THREE.SphereGeometry(0.6, 16, 16);
-        const mat = new THREE.MeshPhongMaterial({ 
-            color: color, 
-            emissive: color, 
-            emissiveIntensity: 0.6 
-        });
-        const mesh = new THREE.Mesh(geo, mat);
-        mesh.position.set(powerup.position.x, powerup.position.y + Math.sin(Date.now() * 0.005) * 0.15, powerup.position.z);
-        scene.add(mesh);
-        powerupMeshes.push(mesh);
-    }
-}
-
-// ============================================================================
-// Update Labels Position
-// ============================================================================
-
-function updateLabels() {
-    for (const playerId in players) {
-        const player = players[playerId];
-        if (player.head && player.nameLabel && player.scoreLabel) {
-            // Position name label above head
-            player.nameLabel.position.set(
-                player.head.position.x,
-                player.head.position.y + 2.5,
-                player.head.position.z
-            );
-            
-            // Position score label below name
-            player.scoreLabel.position.set(
-                player.head.position.x,
-                player.head.position.y + 1.2,
-                player.head.position.z
-            );
-            
-            // Always face camera
-            player.nameLabel.lookAt(camera.position);
-            player.scoreLabel.lookAt(camera.position);
-        }
-    }
-}
-
-// ============================================================================
-// Three.js Setup
-// ============================================================================
-
-function init() {
-    scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0a0a12);
-    scene.fog = new THREE.Fog(0x0a0a12, 40, 120);
-
-    camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.shadowMap.enabled = true;
-    document.getElementById('game-container').appendChild(renderer.domElement);
-
-    // Lighting
-    scene.add(new THREE.AmbientLight(0xffffff, 0.3));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-    sun.position.set(100, 200, 100);
-    sun.castShadow = true;
-    sun.shadow.camera.left = -WORLD_SIZE; sun.shadow.camera.right = WORLD_SIZE;
-    sun.shadow.camera.top = WORLD_SIZE; sun.shadow.camera.bottom = -WORLD_SIZE;
-    sun.shadow.mapSize.width = 2048; sun.shadow.mapSize.height = 2048;
-    scene.add(sun);
-
+// ============ THREE ============
+function initThree(){
+    scene=new THREE.Scene();scene.background=new THREE.Color(0x0a0a12);scene.fog=new THREE.Fog(0x0a0a12,40,120);
+    camera=new THREE.PerspectiveCamera(75,innerWidth/innerHeight,0.1,1000);
+    renderer=new THREE.WebGLRenderer({antialias:true});renderer.setSize(innerWidth,innerHeight);renderer.shadowMap.enabled=true;document.getElementById('gamewrap').appendChild(renderer.domElement);
+    scene.add(new THREE.AmbientLight(0xffffff,0.3));
+    const sun=new THREE.DirectionalLight(0xffffff,1.2);sun.position.set(100,200,100);sun.castShadow=true;
+    sun.shadow.camera.left=-WORLD_SIZE;sun.shadow.camera.right=WORLD_SIZE;sun.shadow.camera.top=WORLD_SIZE;sun.shadow.camera.bottom=-WORLD_SIZE;
+    sun.shadow.mapSize.width=2048;sun.shadow.mapSize.height=2048;scene.add(sun);
     // Floor
-    const floorGeo = new THREE.PlaneGeometry(WORLD_SIZE, WORLD_SIZE);
-    const canvas = document.createElement('canvas');
-    canvas.width = 512; canvas.height = 512;
-    const ctx = canvas.getContext('2d');
-    ctx.fillStyle = '#10182b'; ctx.fillRect(0,0,512,512);
-    ctx.strokeStyle = '#1e293b'; ctx.lineWidth = 4;
-    for(let i=0; i<=512; i+=64) {
-        ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,512); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(512,i); ctx.stroke();
-    }
-    const floorTex = new THREE.CanvasTexture(canvas);
-    floorTex.wrapS = floorTex.wrapT = THREE.RepeatWrapping;
-    floorTex.repeat.set(WORLD_SIZE/10, WORLD_SIZE/10);
-    const floor = new THREE.Mesh(floorGeo, new THREE.MeshPhongMaterial({ map: floorTex }));
-    floor.rotation.x = -Math.PI / 2;
-    floor.receiveShadow = true;
-    scene.add(floor);
-
-    // Window resize
-    window.addEventListener('resize', () => {
-        camera.aspect = window.innerWidth / window.innerHeight;
-        camera.updateProjectionMatrix();
-        renderer.setSize(window.innerWidth, window.innerHeight);
-    });
-
-    // Keyboard controls
-    window.addEventListener('keydown', (e) => {
-        if (chatOpen) return;
-        
-        if (e.key.toLowerCase() === 'c') toggleCamera();
-        if (e.key === 'Enter' && !chatOpen) {
-            toggleChat();
-        }
-        handleKey(e.key, true);
-    });
-    window.addEventListener('keyup', (e) => {
-        if (!chatOpen) handleKey(e.key, false);
-    });
-    
-    // Chat input
-    const chatInput = document.getElementById('chat-input');
-    if (chatInput) {
-        chatInput.addEventListener('keydown', handleChatInput);
-    }
-    
-    // Chat toggle button
-    const chatToggle = document.getElementById('chat-btn');
-    if (chatToggle) {
-        chatToggle.onclick = toggleChat;
-    }
-    
-    // Chat send button
-    const chatSend = document.getElementById('chat-send');
-    if (chatSend) {
-        chatSend.onclick = sendChatMessage;
-    }
-    
-    // Join button
-    const joinBtn = document.getElementById('join-btn');
-    if (joinBtn) {
-        joinBtn.onclick = joinGame;
-    }
-    
-    // Restart button
-    const restartBtn = document.getElementById('restart-btn');
-    if (restartBtn) {
-        restartBtn.onclick = respawn;
-    }
-    
-    // Player name input - enter to join
-    const nameInput = document.getElementById('player-name');
-    if (nameInput) {
-        nameInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter') joinGame();
-        });
-    }
-    
-    // Chat input
-    const chatInputEl = document.getElementById('chat-input');
-    if (chatInputEl) {
-        chatInputEl.addEventListener('keydown', handleChatInput);
-    }
-    
-    // Mobile Touch Controls
-    const tL = document.getElementById('touch-left');
-    const tR = document.getElementById('touch-right');
-    
-    const handleTouch = (isLeft, active) => {
-        if (isLeft) keys.left = active;
-        else keys.right = active;
-        
-        const now = Date.now();
-        if (now - lastInputTime > inputThrottle && myPlayerId) {
-            const direction = isLeft ? -1 : 1;
-            sendMessage({ type: 'turn', direction: active ? direction : 0 });
-            lastInputTime = now;
-        }
-    };
-
-    const addTouchListeners = (el, isLeft) => {
-        el.addEventListener('touchstart', (e) => { e.preventDefault(); handleTouch(isLeft, true); }, {passive: false});
-        el.addEventListener('touchend', (e) => { e.preventDefault(); handleTouch(isLeft, false); }, {passive: false});
-        el.addEventListener('touchcancel', (e) => { e.preventDefault(); handleTouch(isLeft, false); }, {passive: false});
-        el.addEventListener('touchmove', (e) => {
-            e.preventDefault();
-            const touch = e.touches[0];
-            const target = document.elementFromPoint(touch.clientX, touch.clientY);
-            if (target !== el) handleTouch(isLeft, false);
-        }, {passive: false});
-    };
-
-    addTouchListeners(document.getElementById('touch-left'), true);
-    addTouchListeners(document.getElementById('touch-right'), false);
-    
-    // Initialize color picker
-    initColorPicker();
-    
-    // Show name/color dialog
-    showNameColorDialog();
-    
+    const fg=new THREE.PlaneGeometry(WORLD_SIZE,WORLD_SIZE),c=document.createElement('canvas');c.width=512;c.height=512;
+    const ctx=c.getContext('2d');ctx.fillStyle='#10182b';ctx.fillRect(0,0,512,512);ctx.strokeStyle='#1e293b';ctx.lineWidth=4;
+    for(let i=0;i<=512;i+=64){ctx.beginPath();ctx.moveTo(i,0);ctx.lineTo(i,512);ctx.stroke();ctx.beginPath();ctx.moveTo(0,i);ctx.lineTo(512,i);ctx.stroke();}
+    const ft=new THREE.CanvasTexture(c);ft.wrapS=ft.wrapT=THREE.RepeatWrapping;ft.repeat.set(WORLD_SIZE/10,WORLD_SIZE/10);
+    const fl=new THREE.Mesh(fg,new THREE.MeshPhongMaterial({map:ft}));fl.rotation.x=-Math.PI/2;fl.receiveShadow=true;scene.add(fl);
+    window.addEventListener('resize',()=>{camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();renderer.setSize(innerWidth,innerHeight);});
+    setupTouch();
     animate();
 }
 
-// ============================================================================
-// Game Functions
-// ============================================================================
-
-function handleKey(key, isDown) {
-    key = key.toLowerCase();
-    if (key === 'a' || key === 'arrowleft') {
-        keys.left = isDown;
-        if (myPlayerId) {
-            const now = Date.now();
-            if (now - lastInputTime > inputThrottle) {
-                sendMessage({ type: 'turn', direction: isDown ? -1 : 0 });
-                lastInputTime = now;
-            }
-        }
-    }
-    if (key === 'd' || key === 'arrowright') {
-        keys.right = isDown;
-        if (myPlayerId) {
-            const now = Date.now();
-            if (now - lastInputTime > inputThrottle) {
-                sendMessage({ type: 'turn', direction: isDown ? 1 : 0 });
-                lastInputTime = now;
-            }
-        }
-    }
-}
-
-function respawn() {
-    document.getElementById('game-over').style.display = 'none';
-    document.getElementById('winner-overlay').style.display = 'none';
-    isGameOver = false;
-    sendMessage({ type: 'respawn' });
-}
-
-function showWinner(winnerId, scores) {
-    const winner = players[winnerId];
-    const winnerName = winner ? winner.name : `Player ${winnerId.substring(0, 4)}`;
-    const winnerOverlay = document.getElementById('winner-overlay');
-    
-    if (winnerOverlay) {
-        winnerOverlay.style.display = 'block';
-        winnerOverlay.innerText = `🏆 ${winnerName} WINS! 🏆`;
-    }
-    
-    const gameOverEl = document.getElementById('game-over');
-    if (gameOverEl) {
-        gameOverEl.style.display = 'block';
-        document.getElementById('final-score').innerText = (myPlayer ? myPlayer.score : 0);
-    }
-    
-    isGameOver = true;
-    
-    setTimeout(() => {
-        if (winnerOverlay) winnerOverlay.style.display = 'none';
-    }, 5000);
-}
-
-function gameOver() {
-    if (isGameOver) return;
-    isGameOver = true;
-    const gameOverEl = document.getElementById('game-over');
-    if (gameOverEl) {
-        gameOverEl.style.display = 'block';
-        document.getElementById('final-score').innerText = (myPlayer ? myPlayer.score : 0);
-    }
-}
-
-function toggleCamera() {
-    cameraMode = cameraMode === 'thirdPerson' ? 'topDown' : 'thirdPerson';
-}
-
-function updateGameState(state) {
-    // Update players
-    for (const playerId in state.players) {
-        const playerData = state.players[playerId];
-        
-        if (!players[playerId]) {
-            addPlayer(playerId, playerData);
-        } else {
-            updatePlayer(playerId, playerData);
-        }
-        
-        if (playerId === myPlayerId) {
-            myPlayer = players[playerId];
-        }
-    }
-    
-    // Remove players no longer in state
-    for (const playerId in players) {
-        if (!state.players[playerId]) {
-            removePlayer(playerId);
-        }
-    }
-    
-    // Update foods
-    foods = state.foods || [];
-    updateFoods();
-    
-    // Update powerups
-    powerups = state.powerups || [];
-    updatePowerups();
-    
-    if (state.startTime) {
-        gameStartTime = state.startTime;
-    }
-    
-    if (myPlayer) {
-        document.getElementById('score-board').innerText = `Score: ${myPlayer.score}`;
-    }
-    
-    if (myPlayer && !myPlayer.isAlive) {
-        gameOver();
-    }
-}
-
-// ============================================================================
-// Animation Loop
-// ============================================================================
-
-function animate() {
+// ============ ANIMATION ============
+function animate(){
     requestAnimationFrame(animate);
-    
-    if (!isGameOver && myPlayer && myPlayer.head) {
-        if (cameraMode === 'thirdPerson') {
-            const camOffset = new THREE.Vector3(
-                -Math.sin(myPlayer.direction) * 12, 
-                7, 
-                -Math.cos(myPlayer.direction) * 12
-            );
-            camera.position.lerp(myPlayer.head.position.clone().add(camOffset), 0.1);
-            camera.lookAt(myPlayer.head.position);
-        } else {
-            camera.position.lerp(new THREE.Vector3(
-                myPlayer.head.position.x, 
-                40, 
-                myPlayer.head.position.z
-            ), 0.1);
-            camera.lookAt(myPlayer.head.position);
+    if(!isGameOver && myPlayer?.head){
+        if(cameraMode==='thirdPerson'){
+            const off=new THREE.Vector3(-Math.sin(myPlayer.dir)*12,7,-Math.cos(myPlayer.dir)*12);
+            camera.position.lerp(myPlayer.head.position.clone().add(off),0.1);camera.lookAt(myPlayer.head.position);
+        }else{camera.position.lerp(new THREE.Vector3(myPlayer.head.position.x,40,myPlayer.head.position.z),0.1);camera.lookAt(myPlayer.head.position);}
+    }
+    updLabels();
+    const t=Date.now()*0.005;foodMeshes.forEach(m=>{m.position.y=0.4+Math.sin(t+m.position.x*0.1)*0.15;m.rotation.y+=0.03;});pupMeshes.forEach(m=>{m.position.y=0.4+Math.sin(t+m.position.x*0.1)*0.15;m.rotation.y+=0.03;});
+    renderer.render(scene,camera);
+}
+
+function updLabels(){
+    for(const p of Object.values(players)){
+        if(p.head && p.lbl && p.slbl){
+            p.lbl.position.set(p.head.position.x,p.head.position.y+2.5,p.head.position.z);
+            p.slbl.position.set(p.head.position.x,p.head.position.y+1.2,p.head.position.z);
+            p.lbl.lookAt(camera.position);p.slbl.lookAt(camera.position);
         }
     }
-    
-    // Update label positions
-    updateLabels();
-    
-    // Animate food/powerup floating
-    const time = Date.now() * 0.005;
-    for (const mesh of foodMeshes) {
-        mesh.position.y = 0.4 + Math.sin(time + mesh.position.x * 0.1) * 0.15;
-        mesh.rotation.y += 0.03;
-    }
-    for (const mesh of powerupMeshes) {
-        mesh.position.y = 0.4 + Math.sin(time + mesh.position.x * 0.1) * 0.15;
-        mesh.rotation.y += 0.03;
-    }
-    
-    renderer.render(scene, camera);
 }
 
-// ============================================================================
-// Initialize
-// ============================================================================
+// ============ INIT ============
+connect();
+document.addEventListener('DOMContentLoaded',()=>{
+    initThree();
+    showJoinModal();
+});
 
-// Connect to WebSocket first
-connectWebSocket();
-
-// Initialize Three.js when DOM is ready
-document.addEventListener('DOMContentLoaded', init);
-
-// Auto-focus name input when modal shows
-const nameInput = document.getElementById('player-name');
-if (nameInput) {
-    nameInput.focus();
-}
+// Globals for HTML onclick
+window.pickColor=pickColor;
+window.doJoin=doJoin;
+window.respawn=respawn;
+window.toggleChat=toggleChat;
+window.sendChatMsg=sendChatMsg;
