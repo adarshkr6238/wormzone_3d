@@ -1,6 +1,8 @@
 // Wormzone 3D - Deno Deploy Native WebSocket Server
 // Uses Deno.serve() for proper WebSocket upgrade handling on Deno Deploy
 
+import { serveStatic } from "https://deno.land/std@0.224.0/http/file_server.ts";
+
 // ============================================================================
 // Game Configuration
 // ============================================================================
@@ -13,6 +15,7 @@ const INITIAL_SEGMENTS = 10;
 const MAX_PLAYERS = 8;
 const FOOD_COUNT = 50;
 const POWERUP_COUNT = 5;
+const HEARTBEAT_INTERVAL = 30000; // 30 seconds
 
 const DEFAULT_COLORS = [
   0x4CAF50, 0x2196F3, 0xFFC107, 0xFF5722,
@@ -75,8 +78,8 @@ interface PlayerInput {
 }
 
 interface BroadcastMessage {
-  type: 'state' | 'player_joined' | 'player_left' | 'game_over' | 'init' | 'chat' | 'scoreboard' | 'player_updated' | 'chat_history';
-  data: GameState | { playerId: string; player: Player } | { playerId: string } | { winner: string; scores: Record<string, number> } | { playerId: string; name: string; message: string; timestamp: number } | { players: Record<string, { name: string; score: number; color: number; isAlive: boolean }> } | { playerId: string; name: string; color: number } | ChatMessage[];
+  type: 'state' | 'player_joined' | 'player_left' | 'game_over' | 'init' | 'chat' | 'scoreboard' | 'player_updated' | 'chat_history' | 'ping';
+  data: GameState | { playerId: string; player: Player } | { playerId: string } | { winner: string; scores: Record<string, number> } | { playerId: string; name: string; message: string; timestamp: number } | { players: Record<string, { name: string; score: number; color: number; isAlive: boolean }> } | { playerId: string; name: string; color: number } | ChatMessage[] | { timestamp: number };
   playerId?: string;
   timestamp: number;
 }
@@ -485,36 +488,6 @@ const gameState = new GameStateManager();
 // Store WebSocket connections with player IDs
 const sockets = new Map<string, WebSocket>();
 
-// Serve static files
-async function serveStatic(req: Request, path: string): Promise<Response | null> {
-  try {
-    // Only serve from /public
-    const fullPath = `${Deno.cwd()}/public/${path}`;
-    const fileInfo = await Deno.stat(fullPath);
-    if (fileInfo.isFile) {
-      const file = await Deno.readFile(fullPath);
-      const contentType = getContentType(path);
-      return new Response(file, { headers: { "content-type": contentType } });
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function getContentType(path: string): string {
-  if (path.endsWith('.html')) return 'text/html; charset=utf-8';
-  if (path.endsWith('.js')) return 'application/javascript';
-  if (path.endsWith('.css')) return 'text/css';
-  if (path.endsWith('.json')) return 'application/json';
-  if (path.endsWith('.png')) return 'image/png';
-  if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg';
-  if (path.endsWith('.svg')) return 'image/svg+xml';
-  if (path.endsWith('.ico')) return 'image/x-icon';
-  if (path.endsWith('.wasm')) return 'application/wasm';
-  return 'application/octet-stream';
-}
-
 // Broadcast to all connected clients except sender
 function broadcast(message: BroadcastMessage, excludeSocket?: WebSocket) {
   const encoded = JSON.stringify(message);
@@ -589,14 +562,35 @@ Deno.serve(async (req: Request): Promise<Response> => {
         data: { playerId, player },
         timestamp: Date.now(),
       }, socket);
+      
+      // Start heartbeat for this connection
+      const heartbeat = setInterval(() => {
+        if (socket.readyState === WebSocket.OPEN) {
+          socket.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
+        } else {
+          clearInterval(heartbeat);
+        }
+      }, HEARTBEAT_INTERVAL);
+      
+      (socket as any).heartbeat = heartbeat;
     };
     
     socket.onmessage = (message: MessageEvent) => {
       try {
-        const data: PlayerInput = JSON.parse(message.data);
+        const data: PlayerInput & { type: string } = JSON.parse(message.data);
         
+        // Handle ping/pong
+        if (data.type === "pong") {
+          return; // Client responded to our ping
+        }
+        
+        // Get playerId from the socket
+        const pid = (socket as any).playerId || playerId;
+        if (!pid) return;
+        
+        // Handle name/color update
         if (data.name || data.color) {
-          const player = gameState.getState().players[playerId];
+          const player = gameState.getState().players[pid];
           if (player) {
             if (data.name) player.name = data.name;
             if (data.color) player.color = data.color;
@@ -604,25 +598,34 @@ Deno.serve(async (req: Request): Promise<Response> => {
         }
         
         // Handle input
-        gameState.handleInput(playerId, data);
+        gameState.handleInput(pid, data);
       } catch (error) {
-        console.error(`Error processing message from ${playerId}:`, error);
+        console.error(`Error processing message from ${(socket as any).playerId || "unknown"}:`, error);
       }
     };
     
     socket.onclose = () => {
-      console.log(`👋 Player disconnected: ${playerId}`);
-      sockets.delete(playerId);
-      gameState.removePlayer(playerId);
-      broadcast({
-        type: "player_left",
-        data: { playerId },
-        timestamp: Date.now(),
-      });
+      const pid = (socket as any).playerId || playerId;
+      
+      if (pid) {
+        console.log(`👋 Player disconnected: ${pid}`);
+        // Clear heartbeat
+        const heartbeat = (socket as any).heartbeat;
+        if (heartbeat) clearInterval(heartbeat);
+        
+        sockets.delete(pid);
+        gameState.removePlayer(pid);
+        broadcast({
+          type: "player_left",
+          data: { playerId: pid },
+          timestamp: Date.now(),
+        });
+      }
     };
     
     socket.onerror = (error: Error) => {
-      console.error(`WebSocket error for ${playerId}:`, error.message);
+      const pid = (socket as any).playerId || playerId || "unknown";
+      console.error(`WebSocket error for ${pid}:`, error.message);
     };
     
     return response;
@@ -661,6 +664,7 @@ console.log(`
    - Player names above snakes
    - Chat system
    - Multiplayer battle royale!
+   - Heartbeat/ping-pong for connection health
 
 📝 To play:
    Open: https://your-project.deno.dev/multiplayer.html

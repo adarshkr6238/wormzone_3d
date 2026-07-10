@@ -87,6 +87,11 @@ function handleMessage(message) {
             // Game will start when state is received
             break;
             
+        case 'ping':
+            // Respond to server ping with pong
+            sendMessage({ type: 'pong', timestamp: Date.now() });
+            break;
+            
         case 'state':
             updateGameState(message.data);
             break;

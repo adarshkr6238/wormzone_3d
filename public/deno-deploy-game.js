@@ -49,6 +49,7 @@ function handleMsg(m){
         case 'scoreboard': Object.assign(scoreData,m.data); renderScore(); break;
         case 'chat': chatMsgs.push(m.data); if(chatMsgs.length>100)chatMsgs.shift(); renderChat(); break;
         case 'game_over': showWinner(m.data.winner,m.data.scores); break;
+        case 'ping': send({type:'pong', timestamp:Date.now()}); break;
     }
 }
 
