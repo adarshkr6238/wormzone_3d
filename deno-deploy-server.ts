@@ -219,6 +219,15 @@ class GameStateManager {
           player.direction += input.direction * ROTATION_SPEED;
         }
         break;
+      case 'join':
+        // Handle initial join with name/color
+        if (input.name) player.name = input.name;
+        if (input.color) {
+          player.color = input.color;
+          this.playerColors.set(playerId, input.color);
+        }
+        player.hasJoined = true;
+        break;
       case 'respawn':
         this.respawnPlayer(player);
         break;
@@ -482,6 +491,88 @@ const gameState = new GameStateManager();
 // Store WebSocket connections with player IDs
 const sockets = new Map<string, WebSocket>();
 
+// WebSocket upgrade handler - MUST be before router
+app.use(async (ctx, next) => {
+  if (ctx.request.headers.get("upgrade") === "websocket") {
+    const { socket, response } = Deno.upgradeWebSocket(ctx.request);
+    
+    socket.onopen = () => {
+      const playerId = crypto.randomUUID();
+      const ip = ctx.request.headers.get("x-forwarded-for") || 
+                 ctx.request.headers.get("host") || "unknown";
+      
+      console.log(`👤 New player connected: ${playerId} (from ${ip})`);
+      console.log(`🎯 Total players: ${gameState.getPlayerCount()}`);
+      
+      sockets.set(playerId, socket);
+      (socket as any).playerId = playerId;
+      
+      // Send initial state
+      socket.send(JSON.stringify({
+        type: "init",
+        playerId,
+        state: gameState.getState(),
+        chatHistory: gameState.getChatHistory(),
+      }));
+      
+      // Add player to game
+      const player = gameState.addPlayer(playerId);
+      broadcast({
+        type: "player_joined",
+        data: { playerId, player },
+        timestamp: Date.now(),
+      }, socket);
+    };
+    
+    socket.onmessage = (message: MessageEvent) => {
+      try {
+        const data: PlayerInput = JSON.parse(message.data);
+        
+        // Get playerId from the socket
+        const playerId = (socket as any).playerId;
+        if (playerId) {
+          // Handle name/color update
+          if (data.name || data.color) {
+            const player = gameState.getState().players[playerId];
+            if (player) {
+              if (data.name) player.name = data.name;
+              if (data.color) player.color = data.color;
+            }
+          }
+          
+          // Handle input
+          gameState.handleInput(playerId, data);
+        }
+      } catch (error) {
+        console.error(`Error processing message:`, error.message);
+      }
+    };
+    
+    socket.onclose = () => {
+      const playerId = (socket as any).playerId;
+      
+      if (playerId) {
+        console.log(`👋 Player disconnected: ${playerId}`);
+        sockets.delete(playerId);
+        gameState.removePlayer(playerId);
+        broadcast({
+          type: "player_left",
+          data: { playerId },
+          timestamp: Date.now(),
+        });
+      }
+    };
+    
+    socket.onerror = (error: Error) => {
+      console.error(`WebSocket error:`, error.message);
+    };
+    
+    ctx.response = response;
+  } else {
+    await next();
+  }
+});
+
 // Serve static files
 router.get("/", async (ctx) => {
   await ctx.send({
@@ -511,83 +602,6 @@ router.get("/:path*", async (ctx) => {
 
 app.use(router.routes());
 app.use(router.allowedMethods());
-
-// WebSocket upgrade handler
-app.use(async (ctx, next) => {
-  if (ctx.request.headers.get("upgrade") === "websocket") {
-    const { socket, response } = Deno.upgradeWebSocket(ctx.request);
-    
-    socket.onopen = () => {
-      const playerId = crypto.randomUUID();
-      const ip = ctx.request.headers.get("x-forwarded-for") || 
-                 ctx.request.headers.get("host") || "unknown";
-      
-      console.log(`👤 New player connected: ${playerId} (from ${ip})`);
-      console.log(`🎯 Total players: ${gameState.getPlayerCount()}`);
-      
-      sockets.set(playerId, socket);
-      // Attach playerId to socket for later lookup
-      (socket as any).playerId = playerId;
-      
-      // Send initial state with chat history
-      socket.send(JSON.stringify({
-        type: "init",
-        playerId,
-        state: gameState.getState(),
-        chatHistory: gameState.getChatHistory(),
-      }));
-      
-      // Add player to game (initially without name/color - they'll join via update_profile)
-      const player = gameState.addPlayer(playerId);
-      broadcast({
-        type: "player_joined",
-        data: { playerId, player },
-        timestamp: Date.now(),
-      }, socket);
-    };
-    
-    socket.onmessage = (message: MessageEvent) => {
-      try {
-        const data: PlayerInput = JSON.parse(message.data);
-        
-        // Handle input
-        gameState.handleInput(sockets.get(socket)?.id || '', data);
-      } catch (error) {
-        console.error(`Error processing message:`, error.message);
-      }
-    };
-    
-    socket.onclose = () => {
-      // Find player ID for this socket
-      let playerId = '';
-      for (const [id, ws] of sockets.entries()) {
-        if (ws === socket) {
-          playerId = id;
-          break;
-        }
-      }
-      
-      if (playerId) {
-        console.log(`👋 Player disconnected: ${playerId}`);
-        sockets.delete(playerId);
-        gameState.removePlayer(playerId);
-        broadcast({
-          type: "player_left",
-          data: { playerId },
-          timestamp: Date.now(),
-        });
-      }
-    };
-    
-    socket.onerror = (error: Error) => {
-      console.error(`WebSocket error:`, error.message);
-    };
-    
-    ctx.response = response;
-  } else {
-    await next();
-  }
-});
 
 // Broadcast to all connected clients except sender
 function broadcast(message: BroadcastMessage, excludeSocket?: WebSocket) {
