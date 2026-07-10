@@ -533,9 +533,25 @@ setInterval(() => {
 
 Deno.serve(async (req: Request): Promise<Response> => {
   const url = new URL(req.url);
+  const upgradeHeader = req.headers.get("upgrade");
   
-  // Handle WebSocket upgrade
-  if (req.headers.get("upgrade") === "websocket") {
+  console.log(`📥 Request: ${req.method} ${url.pathname} | Upgrade: ${upgradeHeader}`);
+  
+  // Handle CORS preflight
+  if (req.method === "OPTIONS") {
+    return new Response(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Upgrade",
+        "Access-Control-Max-Age": "86400",
+      },
+    });
+  }
+  
+  // Handle WebSocket upgrade - case insensitive
+  if (upgradeHeader?.toLowerCase() === "websocket") {
     const { socket, response } = Deno.upgradeWebSocket(req);
     
     const playerId = crypto.randomUUID();
@@ -627,6 +643,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
       const pid = (socket as any).playerId || playerId || "unknown";
       console.error(`WebSocket error for ${pid}:`, error.message);
     };
+    
+    // Add CORS header to response
+    response.headers.set("Access-Control-Allow-Origin", "*");
     
     return response;
   }
