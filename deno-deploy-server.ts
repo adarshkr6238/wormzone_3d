@@ -1,7 +1,5 @@
-// Wormzone 3D - Deno Deploy Compatible Server (Enhanced Multiplayer)
-// Handles name, color, chat, scoreboard, and real-time updates
-
-import { Application, Router } from "https://deno.land/x/oak/mod.ts";
+// Wormzone 3D - Deno Deploy Native WebSocket Server
+// Uses Deno.serve() for proper WebSocket upgrade handling on Deno Deploy
 
 // ============================================================================
 // Game Configuration
@@ -16,14 +14,12 @@ const MAX_PLAYERS = 8;
 const FOOD_COUNT = 50;
 const POWERUP_COUNT = 5;
 
-// Default player colors (can be overridden by player choice)
 const DEFAULT_COLORS = [
   0x4CAF50, 0x2196F3, 0xFFC107, 0xFF5722,
   0x9C27B0, 0x00BCD4, 0xE91E63, 0x795548,
   0xFF9800, 0x009688, 0x673AB7, 0xE91E63,
 ];
 
-// Chat message history (last 50 messages)
 const MAX_CHAT_HISTORY = 50;
 let chatHistory: ChatMessage[] = [];
 
@@ -54,7 +50,7 @@ interface Player {
   path: Position[];
   powerup: string | null;
   powerupTimer: number;
-  hasJoined: boolean; // True after player submits name/color
+  hasJoined: boolean;
 }
 
 interface Food {
@@ -260,11 +256,11 @@ class GameStateManager {
     }
     
     // Broadcast to all players
-    this.broadcastChat(chatMessage);
-  }
-
-  private broadcastChat(chatMessage: ChatMessage) {
-    // This will be called by the WebSocket handler
+    broadcast({
+      type: "chat",
+      data: chatMessage,
+      timestamp: Date.now(),
+    });
   }
 
   public getChatHistory(): ChatMessage[] {
@@ -484,124 +480,40 @@ class GameStateManager {
 // Server Setup
 // ============================================================================
 
-const app = new Application();
-const router = new Router();
 const gameState = new GameStateManager();
 
 // Store WebSocket connections with player IDs
 const sockets = new Map<string, WebSocket>();
 
-// WebSocket upgrade handler - MUST be before router
-app.use(async (ctx, next) => {
-  if (ctx.request.headers.get("upgrade") === "websocket") {
-    const { socket, response } = Deno.upgradeWebSocket(ctx.request);
-    
-    socket.onopen = () => {
-      const playerId = crypto.randomUUID();
-      const ip = ctx.request.headers.get("x-forwarded-for") || 
-                 ctx.request.headers.get("host") || "unknown";
-      
-      console.log(`👤 New player connected: ${playerId} (from ${ip})`);
-      console.log(`🎯 Total players: ${gameState.getPlayerCount()}`);
-      
-      sockets.set(playerId, socket);
-      (socket as any).playerId = playerId;
-      
-      // Send initial state
-      socket.send(JSON.stringify({
-        type: "init",
-        playerId,
-        state: gameState.getState(),
-        chatHistory: gameState.getChatHistory(),
-      }));
-      
-      // Add player to game
-      const player = gameState.addPlayer(playerId);
-      broadcast({
-        type: "player_joined",
-        data: { playerId, player },
-        timestamp: Date.now(),
-      }, socket);
-    };
-    
-    socket.onmessage = (message: MessageEvent) => {
-      try {
-        const data: PlayerInput = JSON.parse(message.data);
-        
-        // Get playerId from the socket
-        const playerId = (socket as any).playerId;
-        if (playerId) {
-          // Handle name/color update
-          if (data.name || data.color) {
-            const player = gameState.getState().players[playerId];
-            if (player) {
-              if (data.name) player.name = data.name;
-              if (data.color) player.color = data.color;
-            }
-          }
-          
-          // Handle input
-          gameState.handleInput(playerId, data);
-        }
-      } catch (error) {
-        console.error(`Error processing message:`, error.message);
-      }
-    };
-    
-    socket.onclose = () => {
-      const playerId = (socket as any).playerId;
-      
-      if (playerId) {
-        console.log(`👋 Player disconnected: ${playerId}`);
-        sockets.delete(playerId);
-        gameState.removePlayer(playerId);
-        broadcast({
-          type: "player_left",
-          data: { playerId },
-          timestamp: Date.now(),
-        });
-      }
-    };
-    
-    socket.onerror = (error: Error) => {
-      console.error(`WebSocket error:`, error.message);
-    };
-    
-    ctx.response = response;
-  } else {
-    await next();
-  }
-});
-
 // Serve static files
-router.get("/", async (ctx) => {
-  await ctx.send({
-    root: `${Deno.cwd()}/public`,
-    index: "deno-deploy.html",
-  });
-});
-
-router.get("/multiplayer", async (ctx) => {
-  await ctx.send({
-    root: `${Deno.cwd()}/public`,
-    index: "deno-deploy.html",
-  });
-});
-
-router.get("/:path*", async (ctx) => {
+async function serveStatic(req: Request, path: string): Promise<Response | null> {
   try {
-    await ctx.send({
-      root: `${Deno.cwd()}/public`,
-      path: ctx.params.path,
-    });
+    // Only serve from /public
+    const fullPath = `${Deno.cwd()}/public/${path}`;
+    const fileInfo = await Deno.stat(fullPath);
+    if (fileInfo.isFile) {
+      const file = await Deno.readFile(fullPath);
+      const contentType = getContentType(path);
+      return new Response(file, { headers: { "content-type": contentType } });
+    }
+    return null;
   } catch {
-    ctx.response.status = 404;
-    ctx.response.body = "Not Found";
+    return null;
   }
-});
+}
 
-app.use(router.routes());
-app.use(router.allowedMethods());
+function getContentType(path: string): string {
+  if (path.endsWith('.html')) return 'text/html; charset=utf-8';
+  if (path.endsWith('.js')) return 'application/javascript';
+  if (path.endsWith('.css')) return 'text/css';
+  if (path.endsWith('.json')) return 'application/json';
+  if (path.endsWith('.png')) return 'image/png';
+  if (path.endsWith('.jpg') || path.endsWith('.jpeg')) return 'image/jpeg';
+  if (path.endsWith('.svg')) return 'image/svg+xml';
+  if (path.endsWith('.ico')) return 'image/x-icon';
+  if (path.endsWith('.wasm')) return 'application/wasm';
+  return 'application/octet-stream';
+}
 
 // Broadcast to all connected clients except sender
 function broadcast(message: BroadcastMessage, excludeSocket?: WebSocket) {
@@ -642,13 +554,106 @@ setInterval(() => {
   }
 }, 16); // ~60fps
 
-// Start server
-const PORT = parseInt(Deno.env.get("PORT") || "8000");
+// ============================================================================
+// Deno.serve() Handler - Native WebSocket Support
+// ============================================================================
+
+Deno.serve(async (req: Request): Promise<Response> => {
+  const url = new URL(req.url);
+  
+  // Handle WebSocket upgrade
+  if (req.headers.get("upgrade") === "websocket") {
+    const { socket, response } = Deno.upgradeWebSocket(req);
+    
+    const playerId = crypto.randomUUID();
+    const ip = req.headers.get("x-forwarded-for") || req.headers.get("host") || "unknown";
+    
+    console.log(`👤 New player connected: ${playerId} (from ${ip})`);
+    console.log(`🎯 Total players: ${gameState.getPlayerCount()}`);
+    
+    sockets.set(playerId, socket);
+    
+    socket.onopen = () => {
+      // Send initial state with chat history
+      socket.send(JSON.stringify({
+        type: "init",
+        playerId,
+        state: gameState.getState(),
+        chatHistory: gameState.getChatHistory(),
+      }));
+      
+      // Add player to game
+      const player = gameState.addPlayer(playerId);
+      broadcast({
+        type: "player_joined",
+        data: { playerId, player },
+        timestamp: Date.now(),
+      }, socket);
+    };
+    
+    socket.onmessage = (message: MessageEvent) => {
+      try {
+        const data: PlayerInput = JSON.parse(message.data);
+        
+        if (data.name || data.color) {
+          const player = gameState.getState().players[playerId];
+          if (player) {
+            if (data.name) player.name = data.name;
+            if (data.color) player.color = data.color;
+          }
+        }
+        
+        // Handle input
+        gameState.handleInput(playerId, data);
+      } catch (error) {
+        console.error(`Error processing message from ${playerId}:`, error);
+      }
+    };
+    
+    socket.onclose = () => {
+      console.log(`👋 Player disconnected: ${playerId}`);
+      sockets.delete(playerId);
+      gameState.removePlayer(playerId);
+      broadcast({
+        type: "player_left",
+        data: { playerId },
+        timestamp: Date.now(),
+      });
+    };
+    
+    socket.onerror = (error: Error) => {
+      console.error(`WebSocket error for ${playerId}:`, error.message);
+    };
+    
+    return response;
+  }
+  
+  // Serve static files
+  let path = url.pathname;
+  
+  // Handle root and multiplayer routes
+  if (path === "/" || path === "/multiplayer") {
+    path = "deno-deploy.html";
+  } else if (path.startsWith("/")) {
+    path = path.slice(1); // Remove leading slash
+  }
+  
+  const fileResponse = await serveStatic(req, path);
+  if (fileResponse) return fileResponse;
+  
+  // Fallback to index.html for SPA routing
+  if (!path.includes('.')) {
+    const indexResponse = await serveStatic(req, "deno-deploy.html");
+    if (indexResponse) return indexResponse;
+  }
+  
+  return new Response("Not Found", { status: 404 });
+});
 
 console.log(`
-🎮 Wormzone 3D - Enhanced Multiplayer Server
-===============================================
-🌐 Server running on port ${PORT}
+🎮 Wormzone 3D - Enhanced Multiplayer Server (Deno Deploy Native)
+==================================================================
+🌐 Server running on port 8000 (or \$PORT env)
 
 ✨ Features:
    - Name & Color customization
@@ -660,7 +665,7 @@ console.log(`
 📝 To play:
    Open: https://your-project.deno.dev/multiplayer.html
 
-`);
+🔗 WebSocket: wss://your-project.deno.dev
 
-await app.listen({ port: PORT });
-console.log(`HTTP server running on port ${PORT}`);
+WebSockets work automatically on Deno Deploy - no extra config needed!
+`);
