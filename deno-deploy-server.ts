@@ -654,7 +654,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   let path = url.pathname;
   
   // Handle root and multiplayer routes
-  if (path === "/" || path === "/multiplayer") {
+  if (path === "/" || path === "/multiplayer" || path === "/multiplayer.html") {
     path = "deno-deploy.html";
   } else if (path.startsWith("/")) {
     path = path.slice(1); // Remove leading slash
