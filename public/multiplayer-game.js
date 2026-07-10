@@ -593,7 +593,7 @@ function animate() {
 connectWebSocket();
 
 // Initialize Three.js
-document.addEventListener('DOMContentLoaded', () => { init(); bindJoinButton(); });
+document.addEventListener('DOMContentLoaded', () => { init(); bindJoinButton(); bindLogButton(); });
 
 // Bind join button after DOM is ready
 function bindJoinButton(){
@@ -608,6 +608,42 @@ function bindJoinButton(){
     });
   }
 }
+
+// ---------------------------------------------------
+// Log capture & UI toggle
+let logBuffer = [];
+function captureLog(level, ...args){
+  const ts = new Date().toISOString();
+  const msg = args.map(a=> typeof a==='object'?JSON.stringify(a):String(a)).join(' ');
+  logBuffer.push(`[${ts}] ${level.toUpperCase()}: ${msg}`);
+  // Keep buffer limited to last 200 lines
+  if(logBuffer.length>200) logBuffer.shift();
+  // Update UI if visible
+  const out = document.getElementById('log-output');
+  if(out && out.style.display!=='none') out.textContent = logBuffer.join('\n');
+}
+// Hijack console methods
+const origLog = console.log;
+const origError = console.error;
+console.log = (...a)=>{ origLog.apply(console,a); captureLog('log',...a); };
+console.error = (...a)=>{ origError.apply(console,a); captureLog('error',...a); };
+
+function bindLogButton(){
+  const btn = document.getElementById('log-btn');
+  const out = document.getElementById('log-output');
+  if(!btn||!out) return;
+  btn.addEventListener('click',()=>{
+    if(out.style.display==='none'){
+      out.style.display='block';
+      out.textContent = logBuffer.join('\n');
+      btn.textContent = 'Hide Logs';
+    } else {
+      out.style.display='none';
+      btn.textContent = 'Show Logs';
+    }
+  });
+}
+
 
 // Auto-focus name input
 const nameInput = document.getElementById('player-name');
