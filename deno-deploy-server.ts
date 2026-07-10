@@ -653,19 +653,19 @@ Deno.serve(async (req: Request): Promise<Response> => {
   // Serve static files
   let path = url.pathname;
   
-  // Handle root and multiplayer routes
+  // Handle root and multiplayer routes - serve deno-deploy.html
   if (path === "/" || path === "/multiplayer" || path === "/multiplayer.html") {
-    path = "deno-deploy.html";
+    path = "/public/deno-deploy.html";
   } else if (path.startsWith("/")) {
-    path = path.slice(1); // Remove leading slash
+    path = "/public" + path;
   }
   
   const fileResponse = await serveStatic(req, path);
   if (fileResponse) return fileResponse;
   
-  // Fallback to index.html for SPA routing
+  // Fallback to deno-deploy.html for SPA routing
   if (!path.includes('.')) {
-    const indexResponse = await serveStatic(req, "deno-deploy.html");
+    const indexResponse = await serveStatic(req, "/public/deno-deploy.html");
     if (indexResponse) return indexResponse;
   }
   
