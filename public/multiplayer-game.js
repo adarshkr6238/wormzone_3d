@@ -54,23 +54,15 @@ function connectWebSocket() {
         };
         
         ws.onclose = (event) => {
-        console.log('WebSocket closed', event);
-        console.log('Code:', event.code, 'Reason:', event.reason);
-        // Show disconnected status
-        updateConnectionStatus('❌ Disconnected', false);
-        // Try to reconnect after 3 seconds
-        setTimeout(connectWebSocket, 3000);
-    }
-            console.log('WebSocket disconnected');
+            console.log('WebSocket closed', event);
+            console.log('Code:', event.code, 'Reason:', event.reason);
+            // Show disconnected status
             updateConnectionStatus('❌ Disconnected', false);
             // Try to reconnect after 3 seconds
             setTimeout(connectWebSocket, 3000);
         };
         
         ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        updateConnectionStatus('⚠️ Error', false);
-    }
             console.error('WebSocket error:', error);
             updateConnectionStatus('⚠️ Error', false);
         };
@@ -445,12 +437,6 @@ function init() {
     const restartBtn = document.getElementById('restart-btn');
     if (restartBtn) {
         restartBtn.onclick = respawn;
-    }
-    
-    // Join button
-    const joinBtn = document.getElementById('join-btn');
-    if (joinBtn) {
-        joinBtn.onclick = joinGame;
     }
     
     // Mobile Touch Controls
