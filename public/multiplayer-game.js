@@ -616,6 +616,7 @@ console.error = (...a)=>{ origError.apply(console,a); captureLog('error',...a); 
 
 function bindLogButton(){
   const btn = document.getElementById('log-btn');
+  const copyBtn = document.getElementById('copy-log-btn');
   const out = document.getElementById('log-output');
   if(!btn||!out) return;
   btn.addEventListener('click',()=>{
@@ -623,11 +624,25 @@ function bindLogButton(){
       out.style.display='block';
       out.textContent = logBuffer.join('\n');
       btn.textContent = 'Hide Logs';
+      if(copyBtn) copyBtn.style.display = 'inline-block';
     } else {
       out.style.display='none';
       btn.textContent = 'Show Logs';
+      if(copyBtn) copyBtn.style.display = 'none';
     }
   });
+  if(copyBtn){
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(logBuffer.join('\n'));
+        const orig = copyBtn.textContent;
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => copyBtn.textContent = orig, 1500);
+      } catch (e) {
+        console.error('Copy failed:', e);
+      }
+    });
+  }
 }
 
 
