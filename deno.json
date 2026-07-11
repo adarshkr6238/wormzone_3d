@@ -6,5 +6,10 @@
   "permissions": {
     "net": true,
     "read": true
+  },
+  "deploy": {
+    "org": "adarshkr",
+    "app": "wormzone-3d"
   }
 }
+
