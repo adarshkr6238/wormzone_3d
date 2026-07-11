@@ -650,6 +650,11 @@ Deno.serve(async (req: Request): Promise<Response> => {
     return response;
   }
   
+  // Handle favicon.ico - return 204 No Content without filesystem access
+  if (url.pathname === "/favicon.ico") {
+    return new Response(null, { status: 204 });
+  }
+  
   // Serve static files
   let path = url.pathname;
   
