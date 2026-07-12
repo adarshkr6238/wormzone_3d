@@ -31,12 +31,10 @@ let gameStartTime = Date.now();
 // ============================================================================
 
 function connectWebSocket() {
-    // Try to connect to localhost first, then fall back to window.location
+    // Connect to same host and protocol (wss/ws)
     const protocols = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = window.location.hostname;
-    // If running on Deno Deploy (no port), use same origin. Local dev: HTTP on 8000 → WS on 8080.
-    const port = window.location.port ? (window.location.port === '8000' ? '8080' : window.location.port) : '';
-    const wsUrl = port ? `${protocols}//${host}:${port}` : `${protocols}//${host}`;
+    const wsUrl = `${protocols}//${host}`;
     
     console.log(`Connecting to WebSocket: ${wsUrl}`);
     
