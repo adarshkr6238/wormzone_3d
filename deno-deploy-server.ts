@@ -1,7 +1,7 @@
 // Wormzone 3D - Deno Deploy Native WebSocket Server
 // Uses Deno.serve() for proper WebSocket upgrade handling on Deno Deploy
 
-import { serveStatic } from "https://deno.land/std@0.224.0/http/file_server.ts";
+import { serveDir } from "https://deno.land/std@0.224.0/http/file_server.ts";
 
 // ============================================================================
 // Game Configuration
@@ -663,12 +663,12 @@ Deno.serve(async (req: Request): Promise<Response> => {
     path = "deno-deploy.html";
   }
   
-  const fileResponse = await serveStatic(req, path, { root: Deno.cwd() + "/public" });
+  const fileResponse = await serveDir(req, { fsRoot: "./public", urlRoot: "" });
   if (fileResponse) return fileResponse;
   
   // Fallback to deno-deploy.html for SPA routing
   if (!path.includes('.')) {
-    const indexResponse = await serveStatic(req, "deno-deploy.html", { root: Deno.cwd() + "/public" });
+    const indexResponse = await serveDir(req, { fsRoot: "./public", urlRoot: "" });
     if (indexResponse) return indexResponse;
   }
   

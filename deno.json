@@ -7,10 +7,14 @@
     "net": true,
     "read": true
   },
+  "nodeModulesDir": "auto",
   "deploy": {
     "org": "adarshkr",
     "app": "wormzone-3d"
   }
 }
+
+
+
 
 

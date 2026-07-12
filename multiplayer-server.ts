@@ -2,7 +2,7 @@
 // Deno native WebSocket server for real-time multiplayer
 
 import { Application, Router } from "https://deno.land/x/oak/mod.ts";
-import { WebSocket, WebSocketServer } from "https://deno.land/std/ws/mod.ts";
+import { WebSocketServer } from "jsr:@std/http/websocket";
 
 // ============================================================================
 // Game Configuration
